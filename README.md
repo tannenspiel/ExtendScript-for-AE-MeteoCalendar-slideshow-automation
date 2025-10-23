@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Portfolio-MeteoCalendar
 
 Проект: ExtendScript скрипт `MeteoCalendarAnim v1.1.jsx` для Adobe After Effects, автоматизирующий управление слайд-шоу и погодной рубрикой "Метеокалендарь".
@@ -36,3 +37,7 @@
 
 Автор: Tannenspiel (Эдуард)  
 Дата: Октябрь 2025
+=======
+# ExtendScript-for-AE-MeteoCalendar-slideshow-automation
+ExtendScript for AE MeteoCalendar slideshow automation
+>>>>>>> 33a18f8e6e7c4745d53d4b26966d501e058d0fd4
