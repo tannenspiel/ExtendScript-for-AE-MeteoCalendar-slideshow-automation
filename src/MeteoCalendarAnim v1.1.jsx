@@ -310,7 +310,7 @@ settingsTab.alignChildren = ['fill','fill'];
         grpBottomButton.orientation = "row";
         grpBottomButton.alignChildren = ['fill','top'];
 
-        var btnMoveVideoInOut = grpBottomButton.add("button", undefined, "Move Video In-Out");
+        var btnMoveVideoInOut = grpBottomButton.add("button", undefined, "<< Move Video In-Out >>");
             btnMoveVideoInOut.size = [200,25];
 
     var grpVideoPipeline = mainTab.add("panel", undefined, "Video Pipeline");
@@ -483,33 +483,129 @@ clearCheck.onClick = function() {
 }
 
 // === PATCH 4: ОСНОВНЫЕ ФУНКЦИИ С ОБРАБОТКОЙ ОШИБОК ===
+
+// === ОБНОВЛЕННЫЙ ОБРАБОТЧИК CLEAR PROJECT ===
 btnClearImages.onClick = function() {     
     safeExecute("clearImages", function() {
-        log("Начало очистки проекта", "INFO");
-        log("Исходный путь folderPath: " + folderPath, "INFO");
-        log("Исходный путь backupFolderPath: " + backupFolderPath, "INFO");
+        if (!clearCheck.value) {
+            alert("Сначала включите чекбокс 'Enable Clear'!");
+            return false;
+        }
+        
+        log("=== ЗАПУСК УЛУЧШЕННОЙ ОЧИСТКИ ===", "INFO");
         
         var resolvedFolderPath = resolvePath(folderPath);
         var resolvedBackupPath = resolvePath(backupFolderPath);
         
-        log("Разрешенный путь folderPath: " + resolvedFolderPath, "INFO");
-        log("Разрешенный путь backupFolderPath: " + resolvedBackupPath, "INFO");
+        // Создаем бэкап проекта AE
+        createBackupAEProject();
         
-        if (!validateFolderPath(resolvedFolderPath, false) || !validateFolderPath(resolvedBackupPath, true)) {
-            throw new Error("Проверьте пути к папкам!");
+        // Используем универсальный метод очистки
+        var cleanupSuccess = universalCleanup(resolvedFolderPath, resolvedBackupPath);
+        
+        if (cleanupSuccess) {
+            // Очищаем проект AE
+            clearMeteoImageLayers();
+            clearProjectFolder();
+            
+            // Проверяем результат
+            var finalCheck = new Folder(resolvedFolderPath);
+            var filesAfterCleanup = finalCheck.getFiles ? finalCheck.getFiles().length : 0;
+            
+            if (filesAfterCleanup === 0) {
+                alert("✅ Очистка завершена успешно!\n\nВсе файлы удалены через системные команды.");
+                log("Очистка завершена успешно", "SUCCESS");
+            } else {
+                alert("⚠️ Частичный успех\n\nОсталось файлов: " + filesAfterCleanup + "\n\nВозможно, некоторые файлы заблокированы системой.");
+                log("Осталось файлов после очистки: " + filesAfterCleanup, "WARNING");
+            }
+        } else {
+            alert("❌ Очистка не удалась\n\nПопробуйте вручную открыть папку в Explorer и запустить очистку снова.");
+            log("Очистка не удалась", "ERROR");
         }
         
-        createBackupAEProject();
-        clearWorkFolder(backupFolder, resolvedBackupPath);
-        checkWorkFolder(backupFolder, resolvedBackupPath);
-        copyFilesToBackup(resolvedFolderPath, resolvedBackupPath);
-        clearMeteoImageLayers();
-        clearProjectFolder();
-        clearWorkFolder(folder, resolvedFolderPath);
-        checkWorkFolder(folder, resolvedFolderPath);
-        return true;
+        return cleanupSuccess;
     }, []);
 }
+
+
+
+// === УНИВЕРСАЛЬНОЕ РЕШЕНИЕ ===
+function universalCleanup(folderPath, backupPath) {
+    return safeExecute("universalCleanup", function() {
+        var resolvedFolderPath = resolvePath(folderPath);
+        var resolvedBackupPath = resolvePath(backupPath);
+        
+        log("Универсальная очистка запущена", "INFO");
+        log("Основная папка: " + resolvedFolderPath, "INFO");
+        log("Папка бэкапа: " + resolvedBackupPath, "INFO");
+        
+        // Сначала пробуем стандартный метод (для совместимости)
+        var standardResult = standardCleanup(resolvedFolderPath, resolvedBackupPath);
+        
+        if (standardResult) {
+            return true;
+        }
+        
+        // Если стандартный метод не сработал, пробуем командную строку
+        log("Стандартный метод не сработал, пробуем командную строку", "WARNING");
+        return cleanupWithDirectCommands(resolvedFolderPath, resolvedBackupPath);
+    }, []);
+}
+
+function standardCleanup(folderPath, backupPath) {
+    return safeExecute("standardCleanup", function() {
+        try {
+            var folder = new Folder(folderPath);
+            var backupFolder = new Folder(backupPath);
+            
+            if (!folder.exists) {
+                log("Основная папка не существует", "INFO");
+                return true;
+            }
+            
+            // Создаем бэкап папку если нужно
+            if (!backupFolder.exists) {
+                backupFolder.create();
+            }
+            
+            // Копируем файлы
+            var files = folder.getFiles();
+            var copiedCount = 0;
+            
+            for (var i = 0; i < files.length; i++) {
+                var file = files[i];
+                if (file instanceof File) {
+                    var destFile = new File(backupPath + "/" + file.name);
+                    file.copy(destFile);
+                    copiedCount++;
+                }
+            }
+            
+            log("Скопировано файлов стандартным методом: " + copiedCount, "INFO");
+            
+            // Очищаем папку
+            var clearedCount = 0;
+            for (var i = 0; i < files.length; i++) {
+                var file = files[i];
+                if (file instanceof File && file.remove()) {
+                    clearedCount++;
+                }
+            }
+            
+            log("Удалено файлов стандартным методом: " + clearedCount, "INFO");
+            
+            return clearedCount > 0 || files.length === 0;
+            
+        } catch (e) {
+            log("Стандартный метод очистки не сработал: " + e.message, "WARNING");
+            return false;
+        }
+    }, []);
+}
+
+
+
 
 function clearMeteoImageLayers() {    
     return safeExecute("clearMeteoImageLayers", function() {
@@ -1650,6 +1746,9 @@ btnImportVideo.onClick = function() {
     }, []);
 }
 
+
+
+/*
 btnOut.onClick = function() {
     safeExecute("renderOut", function() {
         log("Начало экспорта рендера", "INFO");
@@ -1735,7 +1834,7 @@ btnOut.onClick = function() {
             renderItem2.outputModule(1).applyTemplate(RenderTemplate2);
             renderItem2.outputModule(1).audioEnabled = false;
             // Устанавливаем путь для сохранения в созданную папку
-            var outputFile2 = new File(newFolderPath + "/MeteoCalendar Instagram.jpg");
+            var outputFile2 = new File(newFolderPath + "/MeteoCalendar Instagram_[#####].jpg");
             renderItem2.outputModule(1).file = outputFile2;
             addedItems++;
             log("Добавлена в очередь рендера: MeteoCalendar Instagram (" + RenderTemplate2 + ") -> " + outputFile2.fsName, "SUCCESS");
@@ -1756,6 +1855,130 @@ btnOut.onClick = function() {
         return true;
     }, []);
 }
+*/
+
+
+
+
+
+btnOut.onClick = function() {
+    safeExecute("renderOut", function() {
+        log("Начало экспорта рендера", "INFO");
+        log("Исходный путь VideoOutputPath: " + VideoOutputPath, "INFO");
+        
+        // Создаем папку для рендера
+        var previewsPath = resolvePath(VideoOutputPath);
+        log("Разрешенный путь для рендера: " + previewsPath, "INFO");
+        
+        var previewsFolder = new Folder(previewsPath);
+        
+        if (!previewsFolder.exists) {
+            previewsFolder.create();
+            log("Создана папка Previews: " + previewsPath, "INFO");
+        }
+        
+        // Получаем все папки и находим следующий номер
+        var folders = previewsFolder.getFiles();
+        var numberedFolders = [];
+        
+        for (var i = 0; i < folders.length; i++) {
+            var folder = folders[i];
+            if (folder instanceof Folder) {
+                var folderName = folder.name;
+                if (/^\d+$/.test(folderName)) {
+                    numberedFolders.push(parseInt(folderName));
+                }
+            }
+        }
+        
+        // Находим следующий номер
+        var nextNumber = 1;
+        if (numberedFolders.length > 0) {
+            numberedFolders.sort(function(a, b) { return a - b; });
+            nextNumber = numberedFolders[numberedFolders.length - 1] + 1;
+        }
+        
+        // Создаем новую папку
+        var newFolderPath = previewsPath + "/" + nextNumber;
+        var newFolder = new Folder(newFolderPath);
+        newFolder.create();
+        log("Создана папка для рендера: " + newFolderPath, "SUCCESS");
+        
+        var renderQueue = app.project.renderQueue;
+        var addedItems = 0;
+        
+        // Ищем композиции
+        var meteoOutComp = findCompByName("MeteoCalendarOut");
+        var instagramComp = findCompByName("MeteoCalendar Instagram");
+        
+        // Добавляем MeteoCalendarOut в очередь рендера
+        if (meteoOutComp != null) {
+            var renderItem1 = renderQueue.items.add(meteoOutComp);
+            
+            try {
+                renderItem1.outputModule(1).applyTemplate(RenderTemplate1);
+                log("Применен шаблон: " + RenderTemplate1, "SUCCESS");
+            } catch (e) {
+                log("Шаблон " + RenderTemplate1 + " не найден, используем базовые настройки", "WARNING");
+                // Просто применяем любой доступный видео шаблон
+                try {
+                    renderItem1.outputModule(1).applyTemplate("H.264");
+                } catch (e2) {
+                    // Игнорируем ошибку - пусть пользователь настроит вручную
+                }
+            }
+            
+            renderItem1.outputModule(1).audioEnabled = false;
+            var outputFile1 = new File(newFolderPath + "/MeteoCalendarOut.mp4");
+            renderItem1.outputModule(1).file = outputFile1;
+            addedItems++;
+            log("Добавлена в очередь рендера: MeteoCalendarOut -> " + outputFile1.fsName, "SUCCESS");
+        } else {
+            log("Композиция 'MeteoCalendarOut' не найдена", "WARNING");
+        }
+        
+        // Добавляем MeteoCalendar Instagram в очередь рендера
+        if (instagramComp != null) {
+            var renderItem2 = renderQueue.items.add(instagramComp);
+            var outputModule = renderItem2.outputModule(1);
+            
+            // Пробуем применить шаблон JPEG, если не получается - не страшно
+            try {
+                outputModule.applyTemplate(RenderTemplate2);
+                log("Применен шаблон: " + RenderTemplate2, "SUCCESS");
+            } catch (e) {
+                log("Шаблон " + RenderTemplate2 + " не найден, но это не критично", "INFO");
+            }
+            
+            outputModule.audioEnabled = false;
+            
+            // КЛЮЧЕВОЙ МОМЕНТ: добавляем [#####] к имени файла для автоматической нумерации
+            var outputFile2 = new File(newFolderPath + "/MeteoCalendar_Instagram_[#####].jpg");
+            outputModule.file = outputFile2;
+            
+            addedItems++;
+            log("Добавлена в очередь рендера: MeteoCalendar Instagram -> " + outputFile2.fsName, "SUCCESS");
+            
+        } else {
+            log("Композиция 'MeteoCalendar Instagram' не найдена", "WARNING");
+        }
+        
+        if (addedItems > 0) {
+            var relativeRenderPath = VideoOutputPath + "/" + nextNumber;
+            alert("Добавлено в очередь рендера: " + addedItems + " композиций\nПапка: " + relativeRenderPath + 
+                  "\n\nДля Instagram будет создана JPEG секвенция с нумерацией кадров");
+            log("Всего добавлено в очередь рендера: " + addedItems + " композиций", "SUCCESS");
+        } else {
+            alert("Не найдено композиций для рендера!");
+            log("Не найдено композиций для рендера", "ERROR");
+        }
+        
+        return true;
+    }, []);
+}
+
+
+
 
 function ScaleLayer(comp, layer, scaleExpression, isScaleDown) {
     return safeExecute("scaleLayer", function() {        
