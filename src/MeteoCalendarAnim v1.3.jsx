@@ -219,33 +219,23 @@ function resolvePath(relativePath) {
     
     // Обрабатываем относительные пути
     if (relativePath.indexOf("./") === 0 || relativePath.indexOf("../") === 0) {
-        // Получаем путь к проекту After Effects
-        var projectFile = app.project.file;
-        if (projectFile) {
-            var projectPath = projectFile.path;
-            // Для лог-файла используем папку проекта напрямую
-            if (relativePath.indexOf("./script_log.txt") === 0) {
-                var resolvedPath = projectPath + "/script_log.txt";
-                return resolvedPath;
-            }
-            // Для других путей получаем родительскую папку проекта
-            var parentPath = projectPath.substr(0, projectPath.lastIndexOf("/"));
-            var resolvedPath = parentPath + "/" + relativePath.replace("./", "");
-            return resolvedPath;
-        } else {
-            // Если проект не сохранен, возвращаем как есть
-            return relativePath;
-        }
+        // ⭐ ИСПРАВЛЕНИЕ: Для ВСЕХ путей (включая script_log.txt) используем корень проекта (папка, где находится скрипт)
+        var scriptFile = new File($.fileName);
+        var scriptFolder = scriptFile.parent;
+        var parentPath = scriptFolder.fsName;
+        
+        // ⭐ ИСПРАВЛЕНИЕ: Для всех путей используем папку скрипта как корень проекта
+        var resolvedPath = parentPath + "/" + relativePath.replace("./", "").replace("../", "");
+        $.writeln("[resolvePath] " + relativePath + " -> " + resolvedPath);
+        return resolvedPath;
     }
     
-    // Если путь без префикса, считаем его относительным к папке проекта
-    var projectFile = app.project.file;
-    if (projectFile) {
-        var projectPath = projectFile.path;
-        return projectPath + "/" + relativePath;
-    }
-    
-    return relativePath;
+    // Если путь без префикса, считаем его относительным к папке скрипта
+    var scriptFile = new File($.fileName);
+    var scriptFolder = scriptFile.parent;
+    var resolvedPath = scriptFolder.fsName + "/" + relativePath;
+    $.writeln("[resolvePath] " + relativePath + " -> " + resolvedPath);
+    return resolvedPath;
 }
 
 // === PATCH: ЭКРАНИРОВАНИЕ ПУТЕЙ ДЛЯ БЕЗОПАСНОСТИ BAT-ФАЙЛОВ ===
@@ -898,17 +888,59 @@ btnClearImages.onClick = function() {
             cleanupSuccess = false;
         }
         
-        if (cleanupSuccess) {
-            // ⭐ ШАГ 3: Операции в AE (ВНУТРИ undo-группы - отменяются через Ctrl+Z)
-            clearMeteoImageLayers();
-            clearProjectFolder();
-            renameAndSortMasks();
+        // ⭐ ШАГ 2.1: Очистка пронумерованных папок Video и Previews (НЕОБРАТИМО!)
+        // Очистка папки Video
+        try {
+            var videoInputPath = UI_GETTERS.videoInputPath();
+            var resolvedVideoPath = resolvePath(videoInputPath);
+            log("🎬 Очистка Video (введён): " + videoInputPath, "INFO");
+            log("🎬 Разрешённый путь Video: " + resolvedVideoPath, "INFO");
+            $.writeln("[Clear Project] Video - введён: " + videoInputPath);
+            $.writeln("[Clear Project] Video - разрешён: " + resolvedVideoPath);
             
-            // ⭐ ШАГ 4: Запоминаем данные для восстановления файлов (BAT-операции)
+            if (videoInputPath && videoInputPath !== "") {
+                var videoResult = clearNumberedFolders(videoInputPath, "Video", 3, /^\d{3,4}$/);
+                log("✅ Результат очистки Video: " + (videoResult ? "успешно" : "ошибка"), 
+                    videoResult ? "SUCCESS" : "ERROR");
+                $.writeln("[Clear Project] Video - результат: " + (videoResult ? "успешно" : "ошибка"));
+            }
+        } catch (e) {
+            log("❌ Ошибка очистки Video: " + e.message, "ERROR");
+            $.writeln("[Clear Project] Video - ОШИБКА: " + e.message);
+        }
+        
+        // Очистка папки Previews  
+        try {
+            var videoOutputPath = UI_GETTERS.videoOutputPath();
+            var resolvedPreviewsPath = resolvePath(videoOutputPath);
+            log("📹 Очистка Previews (введён): " + videoOutputPath, "INFO");
+            log("📹 Разрешённый путь Previews: " + resolvedPreviewsPath, "INFO");
+            $.writeln("[Clear Project] Previews - введён: " + videoOutputPath);
+            $.writeln("[Clear Project] Previews - разрешён: " + resolvedPreviewsPath);
+            
+            if (videoOutputPath && videoOutputPath !== "") {
+                var previewsResult = clearNumberedFolders(videoOutputPath, "Previews", 3, /^\d+$/);
+                log("✅ Результат очистки Previews: " + (previewsResult ? "успешно" : "ошибка"),
+                    previewsResult ? "SUCCESS" : "ERROR");
+                $.writeln("[Clear Project] Previews - результат: " + (previewsResult ? "успешно" : "ошибка"));
+            }
+        } catch (e) {
+            log("❌ Ошибка очистки Previews: " + e.message, "ERROR");
+            $.writeln("[Clear Project] Previews - ОШИБКА: " + e.message);
+        }
+        
+        if (cleanupSuccess) {
+            // ⭐ ШАГ 3: Инициализируем данные для восстановления ПЕРЕД очисткой
             g_clearUndoData = {
                 backupPath: resolvedBackupPath,
                 workPath: resolvedFolderPath
             };
+            
+            // ⭐ ШАГ 4: Операции в AE (ВНУТРИ undo-группы - отменяются через Ctrl+Z)
+            // clearProjectFolder сохранит данные о видео в g_clearUndoData
+            clearMeteoImageLayers();
+            clearProjectFolder();
+            renameAndSortMasks();
             
             // Проверяем результат
             var finalCheck = new Folder(resolvedFolderPath);
@@ -1087,25 +1119,39 @@ function cleanupWithDirectCommands(folderPath, backupPath) {
         var escapedFolderPath = normalizedFolderPath.replace(/"/g, '""');
         var escapedBackupPath = normalizedBackupPath.replace(/"/g, '""');
         
-        // ⭐ Улучшенные команды BAT (с /a для всех атрибутов, повторными попытками)
+        // ⭐ Улучшенные команды BAT (удаление всех файлов, включая без расширений)
         var batContent = [
             '@echo off',
             'setlocal EnableDelayedExpansion',
             'set "SRC=' + escapedFolderPath + '"',
             'set "BACKUP=' + escapedBackupPath + '"',
             '',
-            ':: Очищаем BACKUP полностью (все файлы, все атрибуты)',
-            'del /f /q /a "%BACKUP%\\*.*" 2>nul',
-            'for /d %%D in ("%BACKUP%\\*") do rd /s /q "%%D" 2>nul',
+            ':: Очищаем BACKUP полностью (все файлы и папки)',
+            'if exist "%BACKUP%\\*" (',
+            '    cd /d "%BACKUP%"',
+            '    del /f /q /a *.* 2>nul',
+            '    del /f /q /a * 2>nul',
+            '    for /d %%D in (*) do rd /s /q "%%D" 2>nul',
+            ')',
             '',
-            ':: Копируем SRC → BACKUP',
-            'xcopy /y /q "%SRC%\\*.*" "%BACKUP%\\" 2>nul',
+            ':: Копируем SRC → BACKUP (все файлы и папки рекурсивно)',
+            'xcopy /y /q /e /i "%SRC%\\*" "%BACKUP%\\" 2>nul',
             '',
-            ':: Удаляем SRC с повторными попытками (все файлы, все атрибуты)',
+            ':: Удаляем SRC с повторными попытками (все файлы и папки)',
             ':retry',
-            'del /f /q /a "%SRC%\\*.*" 2>nul',
-            'for /d %%D in ("%SRC%\\*") do rd /s /q "%%D" 2>nul',
-            'if exist "%SRC%\\*.*" (timeout /t 1 >nul & goto retry)',
+            'cd /d "%SRC%"',
+            'set "hasFiles=0"',
+            ':: Удаляем все файлы (с расширениями и без)',
+            'del /f /q /a *.* 2>nul',
+            'del /f /q /a * 2>nul',
+            ':: Удаляем все папки',
+            'for /d %%D in (*) do (',
+            '    rd /s /q "%%D" 2>nul',
+            '    if exist "%%D" set "hasFiles=1"',
+            ')',
+            ':: Проверяем, остались ли файлы',
+            'for %%F in (*) do set "hasFiles=1"',
+            'if "!hasFiles!"=="1" (timeout /t 1 >nul & goto retry)',
             '',
             'exit /b 0'
         ].join('\n');
@@ -1116,29 +1162,24 @@ function cleanupWithDirectCommands(folderPath, backupPath) {
         
         log("Создан временный батник для очистки: " + tempBatFile.fsName, "INFO");
         
-        // ⭐ СИНХРОННЫЙ ЗАПУСК (вместо $.sleep!)
         // Проверяем существование файла перед выполнением
         if (!tempBatFile.exists) {
             throw new Error("BAT-файл не был создан: " + tempBatFile.fsName);
         }
         
-        var result = system.execute('cmd /c ""' + tempBatFile.fsName + '"');
+        // Запускаем BAT файл
+        tempBatFile.execute();
         
-        // Краткая задержка для освобождения файла перед удалением
-        $.sleep(100);
+        // Даем время на выполнение (5 секунд для очистки)
+        $.sleep(5000);
         
-        // Удаляем временной файл ТОЛЬКО после завершения
+        // Удаляем временной batник
         try {
             if (tempBatFile.exists) {
                 tempBatFile.remove();
             }
         } catch (e) {
             log("Не удалось удалить временный батник: " + e.message, "WARNING");
-        }
-        
-        // Проверяем результат выполнения BAT
-        if (result !== 0) {
-            throw new Error("Cleanup failed with exit code: " + result);
         }
         
         // Убеждаемся, что папка пуста
@@ -1258,23 +1299,18 @@ function clearFolderWithCMD(folderPath, folderName) {
             
             log("Создан временный батник для очистки '" + folderName + "': " + tempBatFile.fsName, "INFO");
             
-            // ⭐ СИНХРОННЫЙ ЗАПУСК (вместо tempBatFile.execute() + $.sleep!)
             // Проверяем существование файла перед выполнением
             if (!tempBatFile.exists) {
                 throw new Error("BAT-файл не был создан: " + tempBatFile.fsName);
             }
             
-            var result = system.execute('cmd /c ""' + tempBatFile.fsName + '"');
+            // Запускаем BAT файл
+            tempBatFile.execute();
             
-            // Проверяем exit code
-            if (result !== 0) {
-                throw new Error("Очистка папки '" + folderName + "' не удалась. Exit code: " + result);
-            }
+            // Даем время на выполнение (5 секунд для очистки)
+            $.sleep(5000);
             
-            // Краткая задержка для освобождения файла перед удалением
-            $.sleep(100);
-            
-            // Удаляем временный батник ТОЛЬКО после завершения
+            // Удаляем временный batник
             try {
                 if (tempBatFile.exists) {
                     tempBatFile.remove();
@@ -1300,6 +1336,184 @@ function clearFolderWithCMD(folderPath, folderName) {
             return false;
         }
     }, []);
+}
+
+/**
+ * Очищает пронумерованные папки, оставляя только N последних по индексу
+ * НЕОБРАТИМАЯ операция - выполняется через BAT-файл
+ * @param {String} baseFolderPath - путь к базовой папке (Video или Previews)
+ * @param {String} folderName - имя папки для логов
+ * @param {Number} keepCount - количество последних папок для сохранения (по умолчанию 3)
+ * @param {RegExp} folderPattern - регулярное выражение для поиска пронумерованных папок (по умолчанию /^\d+$/)
+ * @returns {Boolean} true если очистка успешна
+ */
+function clearNumberedFolders(baseFolderPath, folderName, keepCount, folderPattern) {
+    keepCount = keepCount || 3;
+    folderPattern = folderPattern || /^\d+$/;
+    
+    try {
+        // ⭐ ИСПРАВЛЕНИЕ: Используем стандартный resolvePath() для всех путей
+        var resolvedPath = resolvePath(baseFolderPath);
+        
+        // 🔍 ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ ДЛЯ ОТЛАДКИ
+        log("🧹 Очистка папки: " + folderName + " (введён: " + baseFolderPath + ")", "INFO");
+        log("🧹 Разрешённый путь: " + resolvedPath, "INFO");
+        $.writeln("[clearNumberedFolders] " + folderName + " - ВХОД: baseFolderPath = " + baseFolderPath);
+        $.writeln("[clearNumberedFolders] " + folderName + " - ПОСЛЕ resolvePath(): resolvedPath = " + resolvedPath);
+        
+        // Проверяем, что resolvedPath не содержит /AE/ (папка AE только для .aep файлов)
+        if (resolvedPath.indexOf("/AE/") >= 0) {
+            log("⚠️ ВНИМАНИЕ: resolvedPath содержит /AE/ - это может быть ошибкой!", "WARNING");
+            $.writeln("[clearNumberedFolders] ⚠️ ВНИМАНИЕ: resolvedPath содержит /AE/!");
+        }
+        
+        // Простая проверка существования папки
+        var targetFolder = new Folder(resolvedPath);
+        if (!targetFolder.exists) {
+            log("❌ Папка не существует: " + resolvedPath, "ERROR");
+            $.writeln("[clearNumberedFolders] " + folderName + " - ОШИБКА: папка не существует!");
+            return false;
+        }
+        
+        $.writeln("[clearNumberedFolders] " + folderName + " - папка существует: " + resolvedPath);
+        
+        // Получаем список папок
+        var folders = targetFolder.getFiles();
+        var numberedFolders = [];
+        
+        for (var i = 0; i < folders.length; i++) {
+            var folder = folders[i];
+            if (folder instanceof Folder && folderPattern.test(folder.name)) {
+                var folderNumber = parseInt(folder.name);
+                if (!isNaN(folderNumber)) {
+                    numberedFolders.push({
+                        name: folder.name,
+                        number: folderNumber
+                    });
+                }
+            }
+        }
+        
+        if (numberedFolders.length === 0) {
+            log("ℹ️ Не найдено пронумерованных папок в " + resolvedPath, "INFO");
+            return true;
+        }
+        
+        if (numberedFolders.length <= keepCount) {
+            log("ℹ️ Папок меньше или равно " + keepCount + ", удаление не требуется", "INFO");
+            return true;
+        }
+        
+        // Сортируем и определяем для удаления
+        numberedFolders.sort(function(a, b) { return a.number - b.number; });
+        var foldersToDelete = numberedFolders.slice(0, numberedFolders.length - keepCount);
+        
+        log("📊 Статистика " + folderName + ": всего " + numberedFolders.length + 
+            ", удаляем " + foldersToDelete.length + 
+            ", оставляем " + keepCount, "INFO");
+        
+        // ⭐ ИСПРАВЛЕНИЕ: Используем ту же логику создания BAT-файла что и в работающем коде
+        var scriptFile = new File($.fileName);
+        var scriptFolder = scriptFile.parent;
+        var tempBatFile = new File(scriptFolder.fsName + "/temp_clear_" + folderName + ".bat");
+        
+        // ⭐ ИСПРАВЛЕНИЕ: Простая нормализация пути (как в работающем коде)
+        var windowsPath = resolvedPath.replace(/\//g, '\\');
+        // Проверяем окончание пути (ExtendScript не поддерживает endsWith)
+        if (windowsPath.length > 0 && windowsPath.charAt(windowsPath.length - 1) !== '\\') {
+            windowsPath += '\\';
+        }
+        
+        // Экранируем кавычки для BAT (как в работающем коде)
+        var batPath = windowsPath.replace(/"/g, '""');
+        
+        // ⭐ ИСПРАВЛЕНИЕ: BAT-код аналогичный работающему (упрощенный)
+        var batContent = [
+            '@echo off',
+            'setlocal enabledelayedexpansion',
+            '',
+            'set "target_dir=' + batPath + '"',
+            'set "keep_count=' + keepCount + '"',
+            '',
+            'echo [INFO] Cleaning ' + folderName + ' folders in: !target_dir!',
+            '',
+            ':: Get and sort numbered folders',
+            'set "temp_file=%temp%\\folders_list_%random%.txt"',
+            'dir /b /ad "!target_dir!" | findstr /r "^[0-9][0-9]*$" > "!temp_file!"',
+            'powershell -Command "Get-Content \'!temp_file!\' | Sort-Object {[int]$_} -Descending" > "!temp_file!.sorted"',
+            '',
+            'set /a counter=0',
+            'for /f "usebackq delims=" %%A in ("!temp_file!.sorted") do (',
+            '  set /a counter+=1',
+            '  if !counter! leq !keep_count! (',
+            '    echo [KEEP] %%A',
+            '  ) else (',
+            '    echo [DELETE] %%A',
+            '    rmdir /s /q "!target_dir!%%A"',
+            '  )',
+            ')',
+            '',
+            'del "!temp_file!" >nul 2>&1',
+            'del "!temp_file!.sorted" >nul 2>&1',
+            'echo [INFO] ' + folderName + ' cleanup completed.',
+            'exit /b 0'
+        ].join('\n');
+        
+        // Записываем BAT-файл
+        tempBatFile.open("w");
+        tempBatFile.write(batContent);
+        tempBatFile.close();
+        
+        log("📄 Создан BAT-файл: " + tempBatFile.fsName, "DEBUG");
+        $.writeln("[clearNumberedFolders] " + folderName + " - BAT-файл создан: " + tempBatFile.fsName);
+        
+        // Запускаем BAT-файл
+        log("🚀 Запуск BAT-файла для очистки " + folderName, "INFO");
+        $.writeln("[clearNumberedFolders] " + folderName + " - запуск BAT-файла");
+        
+        // Проверяем существование файла перед выполнением
+        if (!tempBatFile.exists) {
+            throw new Error("BAT-файл не был создан: " + tempBatFile.fsName);
+        }
+        
+        // Запускаем BAT файл
+        tempBatFile.execute();
+        
+        log("🚀 BAT-файл для " + folderName + " запущен", "INFO");
+        $.writeln("[clearNumberedFolders] " + folderName + " - BAT-файл запущен");
+        
+        // Даем время на выполнение (5 секунд для очистки)
+        $.sleep(5000);
+        
+        // Проверяем результат
+        var finalCheck = new Folder(resolvedPath);
+        var remainingFolders = finalCheck.getFiles().filter(function(f) {
+            return f instanceof Folder && folderPattern.test(f.name);
+        });
+        
+        var success = remainingFolders.length <= keepCount;
+        
+        log("📊 После очистки " + folderName + ": " + remainingFolders.length + " папок осталось", 
+            success ? "SUCCESS" : "WARNING");
+        $.writeln("[clearNumberedFolders] " + folderName + " - после очистки осталось: " + remainingFolders.length);
+        
+        // Удаляем временный файл
+        try {
+            if (tempBatFile.exists) {
+                tempBatFile.remove();
+                log("🗑️ Временный BAT-файл для " + folderName + " удален", "DEBUG");
+            }
+        } catch (e) {
+            log("⚠️ Не удалось удалить временный файл для " + folderName + ": " + e.message, "WARNING");
+        }
+        
+        return success;
+        
+    } catch (e) {
+        log("❌ Ошибка в clearNumberedFolders для " + folderName + ": " + e.message, "ERROR");
+        $.writeln("[clearNumberedFolders] " + folderName + " - ОШИБКА: " + e.message);
+        return false;
+    }
 }
 
 function standardCleanup(folderPath, backupPath) {
@@ -1370,7 +1584,8 @@ function clearMeteoImageLayers() {
         var comp = findCompByName(compName);
 
         if (comp != null) {
-            var removedCount = 0;
+            // ⭐ СОХРАНЯЕМ ДАННЫЕ О ВСЕХ СЛОЯХ METEОIMAGE ПЕРЕД УДАЛЕНИЕМ (для полного восстановления)
+            var meteoImageLayersData = [];
             for (var i = comp.numLayers; i >= 1; i--) {
                 try {
                     var layer = comp.layer(i);
@@ -1378,6 +1593,64 @@ function clearMeteoImageLayers() {
                         continue;
                     }
                     // Ищем слои с форматом MeteoImage 01, MeteoImage 02 и т.д. (новый формат) или равны MeteoImage (старый формат)
+                    var imagePattern = /^MeteoImage (\d{2})$/;
+                    if (layer.name.match(imagePattern) || layer.name == LAYER_NAMES.METEO_IMAGE) {
+                        // Сохраняем полные данные о слое перед удалением
+                        var layerData = {
+                            name: layer.name,
+                            index: i,
+                            inPoint: layer.inPoint,
+                            outPoint: layer.outPoint,
+                            enabled: layer.enabled,
+                            audioEnabled: layer.audioEnabled,
+                            source: null,
+                            transform: {
+                                position: layer.property("Position").value,
+                                scale: layer.property("Scale").value,
+                                rotation: layer.property("Rotation").value,
+                                opacity: layer.property("Opacity").value
+                            }
+                        };
+                        
+                        // Сохраняем информацию об источнике
+                        if (layer.source) {
+                            if (layer.source.file) {
+                                layerData.source = {
+                                    filePath: layer.source.file.fsName,
+                                    name: layer.source.name,
+                                    itemId: layer.source.id // ID элемента в проекте для поиска после восстановления
+                                };
+                            } else if (layer.source.name) {
+                                layerData.source = {
+                                    name: layer.source.name,
+                                    itemId: layer.source.id
+                                };
+                            }
+                        }
+                        
+                        meteoImageLayersData.push(layerData);
+                    }
+                } catch (e) {
+                    log("Ошибка при сохранении данных слоя " + i + ": " + e.message, "WARNING");
+                    continue;
+                }
+            }
+            
+            // Сохраняем данные в g_clearUndoData
+            if (!g_clearUndoData) {
+                g_clearUndoData = {};
+            }
+            g_clearUndoData.meteoImageLayersData = meteoImageLayersData;
+            log("Сохранено данных о слоях MeteoImage: " + meteoImageLayersData.length, "INFO");
+            
+            // Удаляем слои
+            var removedCount = 0;
+            for (var i = comp.numLayers; i >= 1; i--) {
+                try {
+                    var layer = comp.layer(i);
+                    if (!layer || !layer.name) {
+                        continue;
+                    }
                     var imagePattern = /^MeteoImage (\d{2})$/;
                     if (layer.name.match(imagePattern) || layer.name == LAYER_NAMES.METEO_IMAGE) {
                         layer.remove();
@@ -1941,7 +2214,28 @@ function clearProjectFolder() {
             }
         }
 
+        // ⭐ СОХРАНЯЕМ ДАННЫЕ О ВСЕХ ИМПОРТИРОВАННЫХ ФАЙЛАХ ИЗ MAPS.WORK ПЕРЕД УДАЛЕНИЕМ
+        var mapsWorkFilesData = [];
         if (projfolder != undefined) {
+            for (var mw = 1; mw <= projfolder.numItems; mw++) {
+                var item = projfolder.item(mw);
+                if (item.file) {
+                    // Сохраняем путь к файлу и имя в проекте
+                    mapsWorkFilesData.push({
+                        filePath: item.file.fsName,
+                        name: item.name,
+                        originalName: item.file.name // Оригинальное имя файла на диске
+                    });
+                }
+            }
+            
+            // Сохраняем данные в g_clearUndoData
+            if (!g_clearUndoData) {
+                g_clearUndoData = {};
+            }
+            g_clearUndoData.mapsWorkFilesData = mapsWorkFilesData;
+            log("Сохранено данных о файлах из Maps.Work: " + mapsWorkFilesData.length, "INFO");
+            
             while (projfolder.numItems > 0) {
                 projfolder.item(1).remove();
                 removedCount++;
@@ -1959,7 +2253,47 @@ function clearProjectFolder() {
             }
         }
         
-        if (videofolder != undefined) {              
+        // ⭐ СОХРАНЯЕМ ДАННЫЕ О ВИДЕО ПЕРЕД УДАЛЕНИЕМ
+        var videoData = [];
+        if (videofolder != undefined) {
+            for (var i = 1; i <= videofolder.numItems; i++) {
+                var item = videofolder.item(i);
+                if (!(item instanceof CompItem) && item.file) {
+                    // Сохраняем путь к файлу видео
+                    videoData.push({
+                        filePath: item.file.fsName,
+                        name: item.name
+                    });
+                }
+            }
+            
+            // Сохраняем данные о слоях видео в композиции Video
+            var videoComp = findCompByName(COMP_NAMES.VIDEO);
+            var videoLayersData = [];
+            if (videoComp) {
+                for (var j = 1; j <= videoComp.numLayers; j++) {
+                    var layer = videoComp.layer(j);
+                    if (layer.name === LAYER_NAMES.VIDEO && layer.source && layer.source.file) {
+                        videoLayersData.push({
+                            filePath: layer.source.file.fsName,
+                            inPoint: layer.inPoint,
+                            outPoint: layer.outPoint,
+                            enabled: layer.enabled,
+                            audioEnabled: layer.audioEnabled,
+                            index: j
+                        });
+                    }
+                }
+            }
+            
+            // Сохраняем данные в g_clearUndoData
+            if (!g_clearUndoData) {
+                g_clearUndoData = {};
+            }
+            g_clearUndoData.videoData = videoData;
+            g_clearUndoData.videoLayersData = videoLayersData;
+            log("Сохранено данных о видео: " + videoData.length + " файлов, " + videoLayersData.length + " слоев", "INFO");
+            
             var videoRemovedCount = 0;
             for (var i = videofolder.numItems; i >= 1; i--) {
                 if (!(videofolder.item(i) instanceof CompItem)) {
@@ -4072,7 +4406,7 @@ btnOut.onClick = function() {
             log("Создана папка Previews: " + previewsPath, "INFO");
         }
         
-        // Получаем все папки и находим следующий номер
+        // Получаем все папки и находим пронумерованные
         var folders = previewsFolder.getFiles();
         var numberedFolders = [];
         
@@ -4081,23 +4415,53 @@ btnOut.onClick = function() {
             if (folder instanceof Folder) {
                 var folderName = folder.name;
                 if (/^\d+$/.test(folderName)) {
-                    numberedFolders.push(parseInt(folderName));
+                    numberedFolders.push({
+                        number: parseInt(folderName),
+                        name: folderName,
+                        path: folder.fsName,
+                        folder: folder
+                    });
                 }
             }
         }
         
-        // Находим следующий номер
-        var nextNumber = 1;
+        // Определяем папку для рендера
+        var targetFolderPath = null;
+        var targetFolderNumber = null;
+        
         if (numberedFolders.length > 0) {
-            numberedFolders.sort(function(a, b) { return a - b; });
-            nextNumber = numberedFolders[numberedFolders.length - 1] + 1;
+            // Сортируем по номеру и берем последнюю
+            numberedFolders.sort(function(a, b) { return a.number - b.number; });
+            var latestFolder = numberedFolders[numberedFolders.length - 1];
+            
+            // Проверяем, пуста ли последняя папка
+            var latestFolderObj = new Folder(latestFolder.path);
+            var filesInLatest = latestFolderObj.getFiles();
+            var isEmpty = filesInLatest.length === 0;
+            
+            if (isEmpty) {
+                // Используем последнюю папку, если она пуста
+                targetFolderPath = latestFolder.path;
+                targetFolderNumber = latestFolder.number;
+                log("Последняя папка '" + latestFolder.name + "' пуста, используем её для рендера", "INFO");
+            } else {
+                // Создаем новую папку с следующим номером
+                targetFolderNumber = latestFolder.number + 1;
+                targetFolderPath = previewsPath + "/" + targetFolderNumber;
+                var newFolder = new Folder(targetFolderPath);
+                newFolder.create();
+                log("Последняя папка '" + latestFolder.name + "' не пуста (" + filesInLatest.length + " файлов), создана новая папка: " + targetFolderNumber, "INFO");
+            }
+        } else {
+            // Если папок нет, создаем первую
+            targetFolderNumber = 1;
+            targetFolderPath = previewsPath + "/" + targetFolderNumber;
+            var newFolder = new Folder(targetFolderPath);
+            newFolder.create();
+            log("Пронумерованных папок не найдено, создана первая папка: " + targetFolderNumber, "INFO");
         }
         
-        // Создаем новую папку
-        var newFolderPath = previewsPath + "/" + nextNumber;
-        var newFolder = new Folder(newFolderPath);
-        newFolder.create();
-        log("Создана папка для рендера: " + newFolderPath, "SUCCESS");
+        log("Папка для рендера: " + targetFolderPath, "SUCCESS");
         
         var renderQueue = app.project.renderQueue;
         var addedItems = 0;
@@ -4113,7 +4477,7 @@ btnOut.onClick = function() {
             applyRenderTemplateWithFallback(renderItem1.outputModule(1), RenderTemplate1, "H.264");
             
             renderItem1.outputModule(1).audioEnabled = false;
-            var outputFile1 = new File(newFolderPath + "/MeteoCalendarOut.mp4");
+            var outputFile1 = new File(targetFolderPath + "/MeteoCalendarOut.mp4");
             renderItem1.outputModule(1).file = outputFile1;
             addedItems++;
             log("Добавлена в очередь рендера: MeteoCalendarOut -> " + outputFile1.fsName, "SUCCESS");
@@ -4132,7 +4496,7 @@ btnOut.onClick = function() {
             outputModule.audioEnabled = false;
             
             // КЛЮЧЕВОЙ МОМЕНТ: добавляем [#####] к имени файла для автоматической нумерации
-            var outputFile2 = new File(newFolderPath + "/MeteoCalendar_Instagram_[#####].jpg");
+            var outputFile2 = new File(targetFolderPath + "/MeteoCalendar_Instagram_[#####].jpg");
             outputModule.file = outputFile2;
             
             addedItems++;
@@ -4143,7 +4507,7 @@ btnOut.onClick = function() {
         }
         
         if (addedItems > 0) {
-            var relativeRenderPath = VideoOutputPath + "/" + nextNumber;
+            var relativeRenderPath = VideoOutputPath + "/" + targetFolderNumber;
             alert("Добавлено в очередь рендера: " + addedItems + " композиций\nПапка: " + relativeRenderPath + 
                   "\n\nДля Instagram будет создана JPEG секвенция с нумерацией кадров");
             log("Всего добавлено в очередь рендера: " + addedItems + " композиций", "SUCCESS");
